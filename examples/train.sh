@@ -12,6 +12,7 @@ export CUDA_VISIBLE_DEVICES=0
 LOG_DIR="."
 SEED=0
 LR=1e-3
+EMA_DECAY=0.999
 MAX_EPOCHS=10
 VAL_EPOCH_FREQ=1
 BATCH_SIZE=8
@@ -23,6 +24,7 @@ python ${SCRIPT_DIR}/"train.py" \
     --log_dir ${LOG_DIR} \
     --seed ${SEED} \
     --lr ${LR} \
+    --ema_decay ${EMA_DECAY} \
     --max_epochs ${MAX_EPOCHS} \
     --val_epoch_freq ${VAL_EPOCH_FREQ} \
     --batch_size ${BATCH_SIZE} \
