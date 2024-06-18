@@ -95,6 +95,7 @@ class TrainerDataModule(L.LightningDataModule):
             batch_size=self.args.batch_size,
             drop_last=True,
             shuffle=True,
+            num_workers=self.args.num_workers,
         )
 
     def val_dataloader(self):
@@ -103,6 +104,7 @@ class TrainerDataModule(L.LightningDataModule):
             batch_size=self.args.batch_size,
             drop_last=False,
             shuffle=False,
+            num_workers=self.args.num_workers,
         )
 
 
