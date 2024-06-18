@@ -4,6 +4,7 @@
 import argparse
 import lightning as L
 from lightning.pytorch import seed_everything
+from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.strategies import FSDPStrategy
 import torch
@@ -14,17 +15,17 @@ from torch.utils.data import DataLoader
 # Change!!
 from pathlib import Path
 from lightning.pytorch.demos import Transformer
-from package_name.models.test import TestModel
 
 
 class Model(L.LightningModule):
     """Temporary model class for training and validation"""
 
-    def __init__(self, vocab_size: int, lr: float):
+    def __init__(self, args: argparse.Namespace, vocab_size: int):
         super().__init__()
-        self.model_tmp = TestModel()
+        self.save_hyperparameters(args)
+
+        # Change!!
         self.model = Transformer(vocab_size=vocab_size)
-        self.lr = lr
 
     def forward(self, x, y):
         return self.model(x, y)
@@ -44,7 +45,7 @@ class Model(L.LightningModule):
         return {"loss": loss}
 
     def configure_optimizers(self):
-        optimizer = AdamW(self.parameters(), lr=self.lr)
+        optimizer = AdamW(self.parameters(), lr=self.hparams.lr)
         return {
             "optimizer": optimizer,
         }
@@ -75,16 +76,22 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # Model
-    model = Model(vocab_size=dataset.vocab_size, lr=args.lr)
+    model = Model(args=args, vocab_size=dataset.vocab_size)
 
     # Logger
     logger = TensorBoardLogger(".")
+
+    # Callbacks
+    checkpoint_callback = ModelCheckpoint(
+        every_n_epochs=args.val_epoch_freq, save_top_k=-1
+    )
 
     # Trainer
     trainer = L.Trainer(
         accelerator="gpu",
         devices="auto",
         strategy=FSDPStrategy(),
+        callbacks=[checkpoint_callback],
         logger=False if args.validation else logger,
         deterministic=args.validation,
         max_epochs=args.max_epochs,
