@@ -1,6 +1,6 @@
-# python-template
+# pytorch-template
 
-Template for Python Projects
+Template for PyTorch Projects
 
 ## Installation
 
