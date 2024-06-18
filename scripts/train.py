@@ -7,15 +7,9 @@ from lightning.pytorch import seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.strategies import FSDPStrategy
-import torch
-from torch.nn import functional as F
 from torch.optim import AdamW
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn, update_bn
 from torch.utils.data import DataLoader
-
-# TODO: Change!!
-from pathlib import Path
-from lightning.pytorch.demos import Transformer
 
 
 class TrainerModel(L.LightningModule):
@@ -26,6 +20,8 @@ class TrainerModel(L.LightningModule):
         self.save_hyperparameters(args)
 
         # TODO: Change!!
+        from lightning.pytorch.demos import Transformer
+
         self.model = Transformer()
         if self.hparams.ema:
             self.ema_model = AveragedModel(
@@ -36,6 +32,8 @@ class TrainerModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         # TODO: Change!!
+        from torch.nn import functional as F
+
         x, y = batch
         y_hat = self.model(x, y)
         loss = F.nll_loss(y_hat, y.view(-1))
@@ -52,6 +50,8 @@ class TrainerModel(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # TODO: Change!!
+        from torch.nn import functional as F
+
         x, y = batch
         y_hat = self.ema_model(x, y) if self.hparams.ema else self.model(x, y)
         loss = F.nll_loss(y_hat, y.view(-1))
@@ -65,6 +65,47 @@ class TrainerModel(L.LightningModule):
         }
 
 
+class TrainerDataModule(L.LightningDataModule):
+    """Temporary data module class for training and validation"""
+
+    def __init__(self, args: argparse.Namespace):
+        super().__init__()
+        self.args = args
+
+    def prepare_data(self):
+        # TODO: Change!!
+        from pathlib import Path
+
+        self.dataset = L.pytorch.demos.WikiText2(Path("./lightning_logs"))
+
+    def setup(self, stage: str):
+        # TODO: Change!!
+        if stage == "fit" or stage == "validate":
+            train_size = int(0.8 * len(self.dataset))
+            val_size = len(self.dataset) - train_size
+            from torch.utils.data import random_split
+
+            self.train_dataset, self.val_dataset = random_split(
+                self.dataset, [train_size, val_size]
+            )
+
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.args.batch_size,
+            drop_last=True,
+            shuffle=True,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.args.batch_size,
+            drop_last=False,
+            shuffle=False,
+        )
+
+
 def main(args: argparse.Namespace) -> None:
     """Main function
 
@@ -75,26 +116,9 @@ def main(args: argparse.Namespace) -> None:
     """
     seed_everything(args.seed)
 
-    # Data
-    # TODO: Change!!
-    dataset = L.pytorch.demos.WikiText2(Path("./lightning_logs"))
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size]
-    )
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=args.batch_size, drop_last=True, shuffle=True
-    )
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=args.batch_size, drop_last=False, shuffle=False
-    )
-
-    # Model
+    dm = TrainerDataModule(args)
     model = TrainerModel(args)
-
-    # Logger
-    logger = TensorBoardLogger(".")
+    logger = TensorBoardLogger(args.log_dir)
 
     # Callbacks
     checkpoint_callback = ModelCheckpoint(
@@ -114,10 +138,10 @@ def main(args: argparse.Namespace) -> None:
     )
 
     if args.validation:
-        trainer.validate(model, val_dataloader)
+        trainer.validate(model, datamodule=dm)
         return
 
-    trainer.fit(model, train_dataloader, val_dataloader)
+    trainer.fit(model, datamodule=dm)
 
 
 def get_args() -> argparse.Namespace:
