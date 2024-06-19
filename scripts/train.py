@@ -6,7 +6,7 @@ import lightning as L
 from lightning.pytorch import seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
-from lightning.pytorch.strategies import FSDPStrategy
+import torch
 from torch.optim import AdamW
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn, update_bn
 from torch.utils.data import DataLoader
@@ -15,28 +15,49 @@ from torch.utils.data import DataLoader
 class TrainerModel(L.LightningModule):
     """Temporary model class for training and validation"""
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, hparams: argparse.Namespace):
         super().__init__()
-        self.save_hyperparameters(args)
+        self.save_hyperparameters(hparams)
 
         # TODO: Change!!
         from lightning.pytorch.demos import Transformer
 
         self.model = Transformer()
         if self.hparams.ema:
-            self.ema_model = AveragedModel(
-                self.model, multi_avg_fn=get_ema_multi_avg_fn(self.hparams.ema_decay)
-            )
-            for param in self.ema_model.parameters():
-                param.requires_grad = False
+            self.init_ema()
+
+    def init_ema(self) -> None:
+        """Initialize the ema model"""
+        self.ema_model = AveragedModel(
+            self.model, multi_avg_fn=get_ema_multi_avg_fn(self.hparams.ema_decay)
+        )
+        for param in self.ema_model.parameters():
+            param.requires_grad = False
+
+    def load_checkpoint(self, checkpoint_path: str) -> None:
+        """Load model weight from the checkpoint
+
+        Parameters
+        ----------
+        checkpoint_path : str
+            Path to checkpoint
+        """
+        checkpoint = torch.load(checkpoint_path)["state_dict"]
+        self.load_state_dict(checkpoint, strict=False)
+        if self.hparams.ema:
+            ema_model_exist = False
+            for k in checkpoint.keys():
+                if k.startswith("ema_model."):
+                    ema_model_exist = True
+                    break
+            if not ema_model_exist:
+                self.init_ema()
 
     def training_step(self, batch, batch_idx):
         # TODO: Change!!
-        from torch.nn import functional as F
-
         x, y = batch
         y_hat = self.model(x, y)
-        loss = F.nll_loss(y_hat, y.view(-1))
+        loss = torch.nn.functional.nll_loss(y_hat, y.view(-1))
         self.log_dict({"train/loss": loss})
         return {"loss": loss}
 
@@ -50,11 +71,9 @@ class TrainerModel(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # TODO: Change!!
-        from torch.nn import functional as F
-
         x, y = batch
         y_hat = self.ema_model(x, y) if self.hparams.ema else self.model(x, y)
-        loss = F.nll_loss(y_hat, y.view(-1))
+        loss = torch.nn.functional.nll_loss(y_hat, y.view(-1))
         self.log_dict({"val/loss": loss}, on_epoch=True, sync_dist=True)
         return {"loss": loss}
 
@@ -68,9 +87,9 @@ class TrainerModel(L.LightningModule):
 class TrainerDataModule(L.LightningDataModule):
     """Temporary data module class for training and validation"""
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, hparams: argparse.Namespace):
         super().__init__()
-        self.args = args
+        self.save_hyperparameters(hparams)
 
     def prepare_data(self):
         # TODO: Change!!
@@ -83,28 +102,26 @@ class TrainerDataModule(L.LightningDataModule):
         if stage == "fit" or stage == "validate":
             train_size = int(0.8 * len(self.dataset))
             val_size = len(self.dataset) - train_size
-            from torch.utils.data import random_split
-
-            self.train_dataset, self.val_dataset = random_split(
+            self.train_dataset, self.val_dataset = torch.utils.data.random_split(
                 self.dataset, [train_size, val_size]
             )
 
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
-            batch_size=self.args.batch_size,
+            batch_size=self.hparams.batch_size,
             drop_last=True,
             shuffle=True,
-            num_workers=self.args.num_workers,
+            num_workers=self.hparams.num_workers,
         )
 
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
-            batch_size=self.args.batch_size,
+            batch_size=self.hparams.batch_size,
             drop_last=False,
             shuffle=False,
-            num_workers=self.args.num_workers,
+            num_workers=self.hparams.num_workers,
         )
 
 
@@ -116,10 +133,12 @@ def main(args: argparse.Namespace) -> None:
     args : argparse.Namespace
         Arguments
     """
-    seed_everything(args.seed)
+    seed_everything(args.seed, workers=True)
 
     dm = TrainerDataModule(args)
     model = TrainerModel(args)
+    if args.checkpoint:
+        model.load_checkpoint(args.checkpoint)
     logger = TensorBoardLogger(args.log_dir)
 
     # Callbacks
@@ -129,9 +148,10 @@ def main(args: argparse.Namespace) -> None:
 
     # Trainer
     trainer = L.Trainer(
-        accelerator="gpu",
+        accelerator=args.accelerator,
         devices="auto",
-        strategy=FSDPStrategy(),
+        num_nodes=args.num_nodes,
+        strategy=args.train_strategy,
         callbacks=[checkpoint_callback],
         logger=False if args.validation else logger,
         deterministic=args.validation,
@@ -143,7 +163,11 @@ def main(args: argparse.Namespace) -> None:
         trainer.validate(model, datamodule=dm)
         return
 
-    trainer.fit(model, datamodule=dm)
+    trainer.fit(
+        model,
+        datamodule=dm,
+        ckpt_path=args.checkpoint if args.checkpoint and args.resume_train else None,
+    )
 
 
 def get_args() -> argparse.Namespace:
@@ -154,8 +178,19 @@ def get_args() -> argparse.Namespace:
     argparse.Namespace
         Arguments
     """
-    parser = argparse.ArgumentParser(
-        "Test script description",
+    parser = argparse.ArgumentParser("Train script")
+    parser.add_argument(
+        "--accelerator", type=str, default="auto", help="training accelerator"
+    )
+    parser.add_argument("--num_nodes", type=int, default=1, help="number of GPU nodes")
+    parser.add_argument(
+        "--train_strategy", type=str, default="auto", help="training strategy"
+    )
+    parser.add_argument(
+        "--checkpoint", type=str, default="", help="checkpoint of the model"
+    )
+    parser.add_argument(
+        "--resume_train", action="store_true", help="resume training state"
     )
     parser.add_argument("--log_dir", type=str, default=".", help="tensorboard log dir")
     parser.add_argument(

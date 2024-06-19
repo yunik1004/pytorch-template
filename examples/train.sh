@@ -9,6 +9,10 @@ set -x  # print the commands
 export CUDA_VISIBLE_DEVICES=0
 
 # Arguments
+ACCELERATOR="gpu"
+NUM_NODES=1
+TRAIN_STRATEGY="auto"
+CHECKPOINT=""
 LOG_DIR="."
 SEED=0
 LR=1e-3
@@ -21,7 +25,11 @@ PY_ARGS=${@}  # Additional args
 
 # Run the script
 python ${SCRIPT_DIR}/"train.py" \
-    --log_dir ${LOG_DIR} \
+    --accelerator "${ACCELERATOR}" \
+    --num_nodes ${NUM_NODES} \
+    --train_strategy "${TRAIN_STRATEGY}" \
+    --checkpoint "${CHECKPOINT}" \
+    --log_dir "${LOG_DIR}" \
     --seed ${SEED} \
     --lr ${LR} \
     --ema_decay ${EMA_DECAY} \
